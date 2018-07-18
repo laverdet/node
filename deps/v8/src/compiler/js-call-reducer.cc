@@ -5457,8 +5457,9 @@ Reduction JSCallReducer::ReducePromiseConstructor(Node* node) {
   // Allocate a promise context for the closures below.
   Node* promise_context = effect = graph()->NewNode(
       javascript()->CreateFunctionContext(
+          handle(native_context()->scope_info(), isolate()),
           PromiseBuiltinsAssembler::kPromiseContextLength, FUNCTION_SCOPE),
-      context, context, effect, control);
+      context, effect, control);
   effect =
       graph()->NewNode(simplified()->StoreField(AccessBuilder::ForContextSlot(
                            PromiseBuiltinsAssembler::kPromiseSlot)),
@@ -5762,9 +5763,10 @@ Reduction JSCallReducer::ReducePromisePrototypeFinally(Node* node) {
     // Allocate shared context for the closures below.
     context = etrue = graph()->NewNode(
         javascript()->CreateFunctionContext(
+            handle(native_context()->scope_info(), isolate()),
             PromiseBuiltinsAssembler::kPromiseFinallyContextLength,
             FUNCTION_SCOPE),
-        context, context, etrue, if_true);
+        context, etrue, if_true);
     etrue =
         graph()->NewNode(simplified()->StoreField(AccessBuilder::ForContextSlot(
                              PromiseBuiltinsAssembler::kOnFinallySlot)),

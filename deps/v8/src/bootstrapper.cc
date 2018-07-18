@@ -161,7 +161,7 @@ class Genesis BASE_EMBEDDED {
   // Creates some basic objects. Used for creating a context from scratch.
   void CreateRoots();
   // Creates the empty function.  Used for creating a context from scratch.
-  Handle<JSFunction> CreateEmptyFunction(Isolate* isolate);
+  Handle<JSFunction> CreateEmptyFunction();
   // Returns the %ThrowTypeError% intrinsic function.
   // See ES#sec-%throwtypeerror% for details.
   Handle<JSFunction> GetThrowTypeErrorIntrinsic();
@@ -589,29 +589,33 @@ V8_NOINLINE void InstallSpeciesGetter(Handle<JSFunction> constructor) {
 
 }  // namespace
 
-Handle<JSFunction> Genesis::CreateEmptyFunction(Isolate* isolate) {
-  Factory* factory = isolate->factory();
-
+Handle<JSFunction> Genesis::CreateEmptyFunction() {
   // Allocate the function map first and then patch the prototype later.
-  Handle<Map> empty_function_map = factory->CreateSloppyFunctionMap(
+  Handle<Map> empty_function_map = factory()->CreateSloppyFunctionMap(
       FUNCTION_WITHOUT_PROTOTYPE, MaybeHandle<JSFunction>());
   empty_function_map->set_is_prototype_map(true);
   DCHECK(!empty_function_map->is_dictionary_map());
 
+  // Allocate ScopeInfo for the empty function.
+  Handle<ScopeInfo> scope_info = ScopeInfo::CreateForEmptyFunction(isolate());
+
   // Allocate the empty function as the prototype for function according to
   // ES#sec-properties-of-the-function-prototype-object
   NewFunctionArgs args = NewFunctionArgs::ForBuiltin(
-      factory->empty_string(), empty_function_map, Builtins::kEmptyFunction);
-  Handle<JSFunction> empty_function = factory->NewFunction(args);
+      factory()->empty_string(), empty_function_map, Builtins::kEmptyFunction);
+  Handle<JSFunction> empty_function = factory()->NewFunction(args);
+  native_context()->set_empty_function(*empty_function);
 
   // --- E m p t y ---
-  Handle<String> source = factory->NewStringFromStaticChars("() {}");
-  Handle<Script> script = factory->NewScript(source);
+  Handle<String> source = factory()->NewStringFromStaticChars("() {}");
+  Handle<Script> script = factory()->NewScript(source);
   script->set_type(Script::TYPE_NATIVE);
-  Handle<WeakFixedArray> infos = factory->NewWeakFixedArray(2);
+  Handle<WeakFixedArray> infos = factory()->NewWeakFixedArray(2);
   script->set_shared_function_infos(*infos);
+  // TODO(cbruni): fix position information here.
   empty_function->shared()->set_raw_start_position(0);
   empty_function->shared()->set_raw_end_position(source->length());
+  empty_function->shared()->set_scope_info(*scope_info);
   empty_function->shared()->set_function_literal_id(1);
   empty_function->shared()->DontAdaptArguments();
   SharedFunctionInfo::SetScript(handle(empty_function->shared()), script);
@@ -1165,8 +1169,8 @@ void Genesis::InstallGlobalThisBinding() {
   Handle<ScriptContextTable> script_contexts(
       native_context()->script_context_table());
   Handle<ScopeInfo> scope_info = ScopeInfo::CreateGlobalThisBinding(isolate());
-  Handle<JSFunction> closure(native_context()->closure());
-  Handle<Context> context = factory()->NewScriptContext(closure, scope_info);
+  Handle<Context> context =
+      factory()->NewScriptContext(native_context(), scope_info);
 
   // Go ahead and hook it up while we're at it.
   int slot = scope_info->ReceiverContextSlotIndex();
@@ -1399,8 +1403,8 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
                                Handle<JSFunction> empty_function,
                                GlobalContextType context_type) {
   // --- N a t i v e   C o n t e x t ---
-  // Use the empty function as closure (no scope info).
-  native_context()->set_closure(*empty_function);
+  // Use the empty scope info.
+  native_context()->set_scope_info(empty_function->shared()->scope_info());
   native_context()->set_previous(nullptr);
   // Set extension and global object.
   native_context()->set_extension(*global_object);
@@ -5451,7 +5455,7 @@ Genesis::Genesis(
     DCHECK_EQ(0u, context_snapshot_index);
     // We get here if there was no context snapshot.
     CreateRoots();
-    Handle<JSFunction> empty_function = CreateEmptyFunction(isolate);
+    Handle<JSFunction> empty_function = CreateEmptyFunction();
     CreateSloppyModeFunctionMaps(empty_function);
     CreateStrictModeFunctionMaps(empty_function);
     CreateObjectFunction(empty_function);
