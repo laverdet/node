@@ -221,6 +221,12 @@ int WorkerThreadsTaskRunner::NumberOfWorkerThreads() const {
   return threads_.size();
 }
 
+void MultiIsolatePlatform::RegisterIsolate(
+    v8::Isolate* isolate,
+    std::shared_ptr<IsolatePlatformDelegate> delegate) {
+  UNREACHABLE();
+}
+
 PerIsolatePlatformData::PerIsolatePlatformData(
     Isolate* isolate, uv_loop_t* loop)
   : loop_(loop) {
@@ -228,6 +234,11 @@ PerIsolatePlatformData::PerIsolatePlatformData(
   CHECK_EQ(0, uv_async_init(loop, flush_tasks_, FlushTasks));
   flush_tasks_->data = static_cast<void*>(this);
   uv_unref(reinterpret_cast<uv_handle_t*>(flush_tasks_));
+}
+
+std::shared_ptr<v8::TaskRunner>
+PerIsolatePlatformData::GetForegroundTaskRunner() {
+  return shared_from_this();
 }
 
 void PerIsolatePlatformData::FlushTasks(uv_async_t* handle) {
@@ -267,7 +278,7 @@ void PerIsolatePlatformData::PostNonNestableDelayedTask(
 }
 
 PerIsolatePlatformData::~PerIsolatePlatformData() {
-  Shutdown();
+  CHECK(!flush_tasks_);
 }
 
 void PerIsolatePlatformData::AddShutdownCallback(void (*callback)(void*),
@@ -324,19 +335,27 @@ NodePlatform::NodePlatform(int thread_pool_size,
 }
 
 void NodePlatform::RegisterIsolate(Isolate* isolate, uv_loop_t* loop) {
+  RegisterIsolate(
+    isolate, std::make_shared<PerIsolatePlatformData>(isolate, loop));
+}
+
+void NodePlatform::RegisterIsolate(
+    Isolate* isolate,
+    std::shared_ptr<IsolatePlatformDelegate> delegate) {
   Mutex::ScopedLock lock(per_isolate_mutex_);
-  std::shared_ptr<PerIsolatePlatformData> existing = per_isolate_[isolate];
-  CHECK(!existing);
-  per_isolate_[isolate] =
-      std::make_shared<PerIsolatePlatformData>(isolate, loop);
+  auto insertion = per_isolate_.emplace(isolate, std::move(delegate));
+  CHECK(insertion.second);
 }
 
 void NodePlatform::UnregisterIsolate(Isolate* isolate) {
   Mutex::ScopedLock lock(per_isolate_mutex_);
-  std::shared_ptr<PerIsolatePlatformData> existing = per_isolate_[isolate];
-  CHECK(existing);
-  existing->Shutdown();
-  per_isolate_.erase(isolate);
+  auto existing_it = per_isolate_.find(isolate);
+  CHECK_NE(existing_it, per_isolate_.end());
+  PerIsolatePlatformData* node_data = existing_it->second->NodePerIsolate();
+  if (node_data) {
+    node_data->Shutdown();
+  }
+  per_isolate_.erase(existing_it);
 }
 
 void NodePlatform::AddIsolateFinishedCallback(Isolate* isolate,
@@ -344,11 +363,10 @@ void NodePlatform::AddIsolateFinishedCallback(Isolate* isolate,
   Mutex::ScopedLock lock(per_isolate_mutex_);
   auto it = per_isolate_.find(isolate);
   if (it == per_isolate_.end()) {
-    CHECK(it->second);
     cb(data);
     return;
   }
-  it->second->AddShutdownCallback(cb, data);
+  it->second->NodePerIsolate()->AddShutdownCallback(cb, data);
 }
 
 void NodePlatform::Shutdown() {
@@ -394,7 +412,7 @@ void PerIsolatePlatformData::RunForegroundTask(uv_timer_t* handle) {
 }
 
 void NodePlatform::DrainTasks(Isolate* isolate) {
-  std::shared_ptr<PerIsolatePlatformData> per_isolate = ForIsolate(isolate);
+  std::shared_ptr<PerIsolatePlatformData> per_isolate = ForNodeIsolate(isolate);
 
   do {
     // Worker tasks aren't associated with an Isolate.
@@ -452,23 +470,30 @@ void NodePlatform::CallDelayedOnWorkerThread(std::unique_ptr<Task> task,
 }
 
 
-std::shared_ptr<PerIsolatePlatformData>
+std::shared_ptr<IsolatePlatformDelegate>
 NodePlatform::ForIsolate(Isolate* isolate) {
   Mutex::ScopedLock lock(per_isolate_mutex_);
-  std::shared_ptr<PerIsolatePlatformData> data = per_isolate_[isolate];
+  std::shared_ptr<IsolatePlatformDelegate> data = per_isolate_[isolate];
   CHECK(data);
   return data;
 }
 
+std::shared_ptr<PerIsolatePlatformData>
+NodePlatform::ForNodeIsolate(Isolate* isolate) {
+  std::shared_ptr<IsolatePlatformDelegate> data = ForIsolate(isolate);
+  CHECK(data->NodePerIsolate());
+  return std::static_pointer_cast<PerIsolatePlatformData>(std::move(data));
+}
+
 bool NodePlatform::FlushForegroundTasks(Isolate* isolate) {
-  return ForIsolate(isolate)->FlushForegroundTasksInternal();
+  return ForNodeIsolate(isolate)->FlushForegroundTasksInternal();
 }
 
 bool NodePlatform::IdleTasksEnabled(Isolate* isolate) { return false; }
 
 std::shared_ptr<v8::TaskRunner>
 NodePlatform::GetForegroundTaskRunner(Isolate* isolate) {
-  return ForIsolate(isolate);
+  return ForIsolate(isolate)->GetForegroundTaskRunner();
 }
 
 double NodePlatform::MonotonicallyIncreasingTime() {

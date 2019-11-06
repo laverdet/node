@@ -252,6 +252,15 @@ class NODE_EXTERN ArrayBufferAllocator : public v8::ArrayBuffer::Allocator {
 NODE_EXTERN ArrayBufferAllocator* CreateArrayBufferAllocator();
 NODE_EXTERN void FreeArrayBufferAllocator(ArrayBufferAllocator* allocator);
 
+class NODE_EXTERN IsolatePlatformDelegate {
+ public:
+  virtual std::shared_ptr<v8::TaskRunner> GetForegroundTaskRunner() = 0;
+  virtual bool IdleTasksEnabled() = 0;
+ private:
+  friend class NodePlatform;
+  virtual class PerIsolatePlatformData* NodePerIsolate() { return nullptr; }
+};
+
 class NODE_EXTERN MultiIsolatePlatform : public v8::Platform {
  public:
   ~MultiIsolatePlatform() override = default;
@@ -273,6 +282,9 @@ class NODE_EXTERN MultiIsolatePlatform : public v8::Platform {
   // This function may only be called once per `Isolate`.
   virtual void RegisterIsolate(v8::Isolate* isolate,
                                struct uv_loop_s* loop) = 0;
+  virtual void RegisterIsolate(
+    v8::Isolate* isolate,
+    std::shared_ptr<IsolatePlatformDelegate> delegate);
 
   // This function may only be called once per `Isolate`, and discard any
   // pending delayed tasks scheduled for that isolate.
